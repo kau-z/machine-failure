@@ -88,18 +88,24 @@ if st.button("Predict"):
         X_trans = prep.transform(row)
         shap_values = explainer.shap_values(X_trans)
 
-        # For a binary classifier: shap_values is a list [class0, class1]
-        # We want the positive (class 1) array and the single row
+        # Handle different SHAP output shapes
         if isinstance(shap_values, list):
-            shap_row = shap_values[1][0]     # positive class, first (only) sample
+            # Standard binary: [class0, class1]
+            shap_row = shap_values[1][0]
+        elif shap_values.ndim == 3 and shap_values.shape[-1] == 2:
+            # Single array with shape (1, n_features, 2)
+            shap_row = shap_values[0, :, 1]
         else:
-            shap_row = shap_values[0]        # already 1-D if not a list
+            # Already shape (1, n_features)
+            shap_row = shap_values[0]
 
+        # Build importance Series
         feat_imp = (
             pd.Series(shap_row, index=prep.get_feature_names_out())
               .abs()
               .sort_values(ascending=False)
         )
         st.write(feat_imp.head(5).to_frame("SHAP importance"))
+
     else:
         st.write("Decision:", "✅ No Fail (0)")
