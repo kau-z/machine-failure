@@ -2,38 +2,50 @@ import streamlit as st
 import pandas as pd
 import joblib, json
 from pathlib import Path
+import shap
 
-# ── Locate models & threshold ─────────────────────────────
-here = Path(__file__).resolve().parent
-root = here.parent
+# ── Locate model & threshold ─────────────────────────────
+root = Path(__file__).resolve().parent.parent
+model_path    = root / "notebooks" / "best_model_pipeline.joblib"
+threshold_path = root / "notebooks" / "decision_threshold.json"
 
-model_path      = root / "notebooks" / "best_model_pipeline.joblib"
-reason_model_path = root / "notebooks" / "failure_reason_model.joblib"
-threshold_path  = root / "notebooks" / "decision_threshold.json"
-
-# Check files
-for p in [model_path, reason_model_path, threshold_path]:
+# Check required files
+for p in [model_path, threshold_path]:
     if not p.exists():
         st.error(f"Required file missing: {p}")
         st.stop()
 
-# ── Load models ───────────────────────────────────────────
-pipe = joblib.load(model_path)                # binary failure model
-reason_pipe = joblib.load(reason_model_path)  # multi-label reason model
+# ── Load binary failure model & threshold ────────────────
+pipe = joblib.load(model_path)
 with open(threshold_path) as f:
-    th = json.load(f)["threshold"]
+    decision_threshold = json.load(f)["threshold"]
 
-# ── Streamlit UI ──────────────────────────────────────────
-st.title("Machine Failure Predictor with Reason")
+# Grab trained estimator & preprocessor for SHAP
+rf   = pipe.named_steps["model"]
+prep = pipe.named_steps["prep"]
+explainer = shap.TreeExplainer(rf)
 
-t   = st.selectbox("Type", ["L", "M", "H"])
-air = st.number_input("Air temperature [K]", 250.0, 400.0, 300.0)
-proc= st.number_input("Process temperature [K]", 250.0, 450.0, 310.0)
-rpm = st.number_input("Rotational speed [rpm]", 0, 3000, 1500)
-tor = st.number_input("Torque [Nm]", 0.0, 100.0, 40.0)
-wear= st.number_input("Tool wear [min]", 0, 300, 120)
+# ── Streamlit UI ─────────────────────────────────────────
+st.title("Machine Failure Predictor with Reason (Rule + SHAP)")
 
-# Build input row
+st.markdown(
+    """
+    Enter machine operating parameters to estimate the probability of failure.  
+    If a failure is predicted, the app shows:
+    * **Rule-based reasons** – simple checks on sensor thresholds  
+    * **SHAP feature importances** – top features influencing the prediction
+    """
+)
+
+# Input fields
+t    = st.selectbox("Type", ["L", "M", "H"])
+air  = st.number_input("Air temperature [K]", 250.0, 400.0, 300.0)
+proc = st.number_input("Process temperature [K]", 250.0, 450.0, 310.0)
+rpm  = st.number_input("Rotational speed [rpm]", 0, 3000, 1500)
+tor  = st.number_input("Torque [Nm]", 0.0, 100.0, 40.0)
+wear = st.number_input("Tool wear [min]", 0, 300, 120)
+
+# Build a single-row DataFrame matching training features
 row = pd.DataFrame([{
     "Type": t,
     "Air temperature [K]": air,
@@ -41,26 +53,53 @@ row = pd.DataFrame([{
     "Rotational speed [rpm]": rpm,
     "Torque [Nm]": tor,
     "Tool wear [min]": wear,
-    "Temp diff [K]": proc - air,   # engineered feature
+    "Temp diff [K]": proc - air,  # engineered feature used in training
 }])
 
-# ── Prediction button ─────────────────────────────────────
-if st.button("Predict"):
-    p = pipe.predict_proba(row)[0, 1]
-    st.metric("Failure probability", f"{p:.3f}")
+# Simple rule-based reasoning
+def rule_based_reason(r):
+    reasons = []
+    temp_diff = r["Process temperature [K]"].iloc[0] - r["Air temperature [K]"].iloc[0]
+    if temp_diff > 80:
+        reasons.append("High process–air temperature difference (possible heat-dissipation issue)")
+    if r["Tool wear [min]"].iloc[0] > 200:
+        reasons.append("Excessive tool wear")
+    if r["Torque [Nm]"].iloc[0] > 60:
+        reasons.append("High torque / overstrain")
+    if r["Rotational speed [rpm]"].iloc[0] > 2000:
+        reasons.append("High rotational speed")
+    return reasons or ["No specific rule triggered"]
 
-    if p >= th:
-        st.write("Decision:", "⚠️ Fail (1)")
-        # ----- Predict reason(s) -----
-        reason_preds = reason_pipe.predict(row)[0]
-        reason_labels = ["Tool Wear Failure", "Heat Dissipation Failure",
-                         "Power Failure", "Overstrain Failure", "Random Failure"]
-        active_reasons = [lbl for lbl, flag in zip(reason_labels, reason_preds) if flag == 1]
-        if active_reasons:
-            st.subheader("Likely reason(s) for failure:")
-            st.write(", ".join(active_reasons))
+# ── Prediction ───────────────────────────────────────────
+if st.button("Predict"):
+    # 1. Overall failure probability
+    prob = pipe.predict_proba(row)[0, 1]
+    st.metric("Failure probability", f"{prob:.3f}")
+
+    if prob >= decision_threshold:
+        st.write("Decision:", "⚠️ **Fail (1)**")
+
+        # --- Rule-based reasons ---
+        st.subheader("Rule-based reason(s):")
+        st.write(", ".join(rule_based_reason(row)))
+
+        # --- SHAP top feature contributions ---
+        st.subheader("Top contributing features (SHAP):")
+        X_trans = prep.transform(row)
+        shap_values = explainer.shap_values(X_trans)
+
+        # For a binary classifier: shap_values is a list [class0, class1]
+        # We want the positive (class 1) array and the single row
+        if isinstance(shap_values, list):
+            shap_row = shap_values[1][0]     # positive class, first (only) sample
         else:
-            st.subheader("Likely reason:")
-            st.write("Random/unspecified")
+            shap_row = shap_values[0]        # already 1-D if not a list
+
+        feat_imp = (
+            pd.Series(shap_row, index=prep.get_feature_names_out())
+              .abs()
+              .sort_values(ascending=False)
+        )
+        st.write(feat_imp.head(5).to_frame("SHAP importance"))
     else:
         st.write("Decision:", "✅ No Fail (0)")
