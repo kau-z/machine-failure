@@ -1,0 +1,52 @@
+# ---- Python / virtual env ----
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+*.egg
+.env
+.venv/
+venv/
+ENV/
+env/
+.idea/
+.vscode/
+
+# ---- Jupyter / notebooks ----
+.ipynb_checkpoints/
+*.ipynb_out.ipynb
+
+# ---- Data & model artifacts ----
+# original raw data (keep if you really want to version it)
+data/
+*.csv
+*.parquet
+*.tsv
+*.xlsx
+*.xls
+
+# trained models & large binaries
+*.joblib
+*.pkl
+*.pickle
+*.h5
+*.pt
+*.onnx
+*.sav
+
+# optional: if you want to commit only small configs,
+# allow the learned thresholds JSON:
+!notebooks/indicator_thresholds.json
+
+# ---- Streamlit / local state ----
+.streamlit/
+
+# ---- Logs / misc ----
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+
+# ---- OS / editor specific ----
+*.swp
+*~
