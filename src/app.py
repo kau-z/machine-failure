@@ -219,7 +219,3 @@ if st.button("Predict"):
         use_container_width=True
     )
 
-    st.caption(
-        "Indicators use data-driven thresholds (if indicator_thresholds.json is present). "
-        "Model decision uses your trained classifier; adjust cutoffs as needed."
-    )
